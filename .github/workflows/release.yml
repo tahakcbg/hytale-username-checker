@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          chmod +x target/release/hytale-checker
+          tar -czvf hytale-checker-linux-x64.tar.gz -C target/release hytale-checker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hytale-checker-linux-x64.tar.gz
+          path: hytale-checker-linux-x64.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: Compress-Archive -Path target/release/hytale-checker.exe -DestinationPath hytale-checker-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hytale-checker-windows-x64.zip
+          path: hytale-checker-windows-x64.zip
+
+  build-macos-intel:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - name: Build
+        run: cargo build --release --target x86_64-apple-darwin
+      - name: Create app bundle
+        run: |
+          mkdir -p "Hytale Checker.app/Contents/MacOS"
+          cp target/x86_64-apple-darwin/release/hytale-checker "Hytale Checker.app/Contents/MacOS/"
+          chmod +x "Hytale Checker.app/Contents/MacOS/hytale-checker"
+          cat > "Hytale Checker.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          <key>CFBundleExecutable</key>
+          <string>hytale-checker</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.tahakcbg.hytale-checker</string>
+          <key>CFBundleName</key>
+          <string>Hytale Checker</string>
+          <key>CFBundleVersion</key>
+          <string>1.0.0</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+          <key>LSMinimumSystemVersion</key>
+          <string>10.13</string>
+          <key>NSHighResolutionCapable</key>
+          <true/>
+          </dict>
+          </plist>
+          EOF
+          codesign -s - --force --deep "Hytale Checker.app"
+          ditto -c -k --keepParent "Hytale Checker.app" hytale-checker-macos-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hytale-checker-macos-x64.zip
+          path: hytale-checker-macos-x64.zip
+
+  build-macos-arm:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+      - name: Create app bundle
+        run: |
+          mkdir -p "Hytale Checker.app/Contents/MacOS"
+          cp target/aarch64-apple-darwin/release/hytale-checker "Hytale Checker.app/Contents/MacOS/"
+          chmod +x "Hytale Checker.app/Contents/MacOS/hytale-checker"
+          cat > "Hytale Checker.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          <key>CFBundleExecutable</key>
+          <string>hytale-checker</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.tahakcbg.hytale-checker</string>
+          <key>CFBundleName</key>
+          <string>Hytale Checker</string>
+          <key>CFBundleVersion</key>
+          <string>1.0.0</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+          <key>LSMinimumSystemVersion</key>
+          <string>11.0</string>
+          <key>NSHighResolutionCapable</key>
+          <true/>
+          </dict>
+          </plist>
+          EOF
+          codesign -s - --force --deep "Hytale Checker.app"
+          ditto -c -k --keepParent "Hytale Checker.app" hytale-checker-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hytale-checker-macos-arm64.zip
+          path: hytale-checker-macos-arm64.zip
+
+  release:
+    needs: [build-linux, build-windows, build-macos-intel, build-macos-arm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          generate_release_notes: true
