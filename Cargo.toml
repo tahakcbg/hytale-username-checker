@@ -1,6 +1,6 @@
 [package]
 name = "hytale-checker"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 authors = ["tahakcbg"]
 description = "A fast, modern GUI application for checking Hytale username availability"
