@@ -5,7 +5,7 @@ use iced::widget::{
 };
 use iced::{border::Radius, Alignment, Background, Border, Color, Element, Fill, Length, Task};
 
-use crate::checker::{check_usernames_batch, CheckResult, ResultStatus, Stats};
+use crate::checker::{check_usernames_stream, CheckEvent, CheckResult, ResultStatus, Stats};
 use crate::proxy::ProxyType;
 use crate::ui::{self, theme};
 
@@ -20,7 +20,7 @@ pub enum Message {
     ToggleProxyPanel,
     StartCheck,
     StopCheck,
-    CheckComplete(Vec<CheckResult>),
+    CheckEventReceived(CheckEvent),
     ExportResults,
     ExportComplete(Result<String, String>),
     ClearResults,
@@ -140,28 +140,30 @@ impl App {
                     Vec::new()
                 };
 
-                Task::perform(
-                    check_usernames_batch(usernames, proxies, delay, concurrency),
-                    Message::CheckComplete,
-                )
+                let rx = check_usernames_stream(usernames, proxies, delay, concurrency);
+                Task::run(rx, Message::CheckEventReceived)
             }
             Message::StopCheck => {
                 self.is_checking = false;
                 self.status_message = "Stopped".to_string();
                 Task::none()
             }
-            Message::CheckComplete(results) => {
-                for result in &results {
-                    match &result.status {
-                        ResultStatus::Available => self.stats.available += 1,
-                        ResultStatus::Taken => self.stats.taken += 1,
-                        ResultStatus::Error(_) | ResultStatus::Invalid => self.stats.errors += 1,
+            Message::CheckEventReceived(event) => {
+                match event {
+                    CheckEvent::Result(result) => {
+                        match &result.status {
+                            ResultStatus::Available => self.stats.available += 1,
+                            ResultStatus::Taken => self.stats.taken += 1,
+                            ResultStatus::Error(_) | ResultStatus::Invalid => self.stats.errors += 1,
+                        }
+                        self.stats.checked += 1;
+                        self.results.push(result);
                     }
-                    self.stats.checked += 1;
+                    CheckEvent::Done => {
+                        self.is_checking = false;
+                        self.status_message = "Complete".to_string();
+                    }
                 }
-                self.results = results;
-                self.is_checking = false;
-                self.status_message = "Complete".to_string();
                 Task::none()
             }
             Message::ExportResults => {

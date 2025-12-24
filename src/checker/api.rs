@@ -1,3 +1,5 @@
+use futures::channel::mpsc;
+use futures::SinkExt;
 use reqwest::Proxy;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -61,83 +63,67 @@ pub async fn check_single_username(client: &reqwest::Client, username: String) -
     }
 }
 
-pub async fn check_usernames_batch(
+#[derive(Debug, Clone)]
+pub enum CheckEvent {
+    Result(CheckResult),
+    Done,
+}
+
+pub fn check_usernames_stream(
     usernames: Vec<String>,
     proxies: Vec<String>,
     delay_ms: u64,
     concurrency: usize,
-) -> Vec<CheckResult> {
-    let proxy_index = Arc::new(AtomicUsize::new(0));
+) -> mpsc::Receiver<CheckEvent> {
+    let (mut tx, rx) = mpsc::channel(100);
 
-    let clients: Vec<Arc<reqwest::Client>> = if proxies.is_empty() {
-        vec![Arc::new(build_client(None))]
-    } else {
-        proxies
-            .iter()
-            .filter_map(|proxy_url| {
-                Proxy::all(proxy_url)
-                    .ok()
-                    .map(|proxy| Arc::new(build_client(Some(proxy))))
-            })
-            .collect()
-    };
+    tokio::spawn(async move {
+        let proxy_index = Arc::new(AtomicUsize::new(0));
 
-    if clients.is_empty() {
-        let client = Arc::new(build_client(None));
-        return check_with_client(usernames, client, delay_ms, concurrency).await;
-    }
+        let clients: Vec<Arc<reqwest::Client>> = if proxies.is_empty() {
+            vec![Arc::new(build_client(None))]
+        } else {
+            let built: Vec<_> = proxies
+                .iter()
+                .filter_map(|proxy_url| {
+                    Proxy::all(proxy_url)
+                        .ok()
+                        .map(|proxy| Arc::new(build_client(Some(proxy))))
+                })
+                .collect();
+            if built.is_empty() {
+                vec![Arc::new(build_client(None))]
+            } else {
+                built
+            }
+        };
 
-    let mut results = Vec::new();
+        for chunk in usernames.chunks(concurrency) {
+            let futures: Vec<_> = chunk
+                .iter()
+                .map(|username| {
+                    let idx = proxy_index.fetch_add(1, Ordering::SeqCst) % clients.len();
+                    let client = Arc::clone(&clients[idx]);
+                    let username = username.clone();
+                    async move { check_single_username(&client, username).await }
+                })
+                .collect();
 
-    for chunk in usernames.chunks(concurrency) {
-        let futures: Vec<_> = chunk
-            .iter()
-            .map(|username| {
-                let idx = proxy_index.fetch_add(1, Ordering::SeqCst) % clients.len();
-                let client = Arc::clone(&clients[idx]);
-                let username = username.clone();
-                async move { check_single_username(&client, username).await }
-            })
-            .collect();
+            let chunk_results = futures::future::join_all(futures).await;
 
-        let chunk_results = futures::future::join_all(futures).await;
-        results.extend(chunk_results);
+            for result in chunk_results {
+                let _ = tx.send(CheckEvent::Result(result)).await;
+            }
 
-        if delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
         }
-    }
 
-    results
-}
+        let _ = tx.send(CheckEvent::Done).await;
+    });
 
-async fn check_with_client(
-    usernames: Vec<String>,
-    client: Arc<reqwest::Client>,
-    delay_ms: u64,
-    concurrency: usize,
-) -> Vec<CheckResult> {
-    let mut results = Vec::new();
-
-    for chunk in usernames.chunks(concurrency) {
-        let futures: Vec<_> = chunk
-            .iter()
-            .map(|username| {
-                let client = Arc::clone(&client);
-                let username = username.clone();
-                async move { check_single_username(&client, username).await }
-            })
-            .collect();
-
-        let chunk_results = futures::future::join_all(futures).await;
-        results.extend(chunk_results);
-
-        if delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        }
-    }
-
-    results
+    rx
 }
 
 fn build_client(proxy: Option<Proxy>) -> reqwest::Client {
