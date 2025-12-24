@@ -5,7 +5,7 @@ use iced::widget::{
 };
 use iced::{border::Radius, Alignment, Background, Border, Color, Element, Fill, Length, Task};
 
-use crate::checker::{check_usernames_stream, CheckEvent, CheckResult, ResultStatus, Stats};
+use crate::checker::{check_usernames_stream, CancelHandle, CheckEvent, CheckResult, ResultStatus, Stats};
 use crate::proxy::ProxyType;
 use crate::ui::{self, theme};
 
@@ -47,6 +47,7 @@ pub struct App {
     stats: Stats,
     status_message: String,
     show_proxy_panel: bool,
+    cancel_handle: Option<CancelHandle>,
 }
 
 impl App {
@@ -64,6 +65,7 @@ impl App {
                 stats: Stats::default(),
                 status_message: String::new(),
                 show_proxy_panel: false,
+                cancel_handle: None,
             },
             Task::none(),
         )
@@ -140,10 +142,14 @@ impl App {
                     Vec::new()
                 };
 
-                let rx = check_usernames_stream(usernames, proxies, delay, concurrency);
+                let (rx, cancel_handle) = check_usernames_stream(usernames, proxies, delay, concurrency);
+                self.cancel_handle = Some(cancel_handle);
                 Task::run(rx, Message::CheckEventReceived)
             }
             Message::StopCheck => {
+                if let Some(handle) = self.cancel_handle.take() {
+                    handle.cancel();
+                }
                 self.is_checking = false;
                 self.status_message = "Stopped".to_string();
                 Task::none()

@@ -1,7 +1,7 @@
 use futures::channel::mpsc;
 use futures::SinkExt;
 use reqwest::Proxy;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,13 +69,24 @@ pub enum CheckEvent {
     Done,
 }
 
+#[derive(Clone)]
+pub struct CancelHandle(Arc<AtomicBool>);
+
+impl CancelHandle {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 pub fn check_usernames_stream(
     usernames: Vec<String>,
     proxies: Vec<String>,
     delay_ms: u64,
     concurrency: usize,
-) -> mpsc::Receiver<CheckEvent> {
+) -> (mpsc::Receiver<CheckEvent>, CancelHandle) {
     let (mut tx, rx) = mpsc::channel(100);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel_handle = CancelHandle(cancelled.clone());
 
     tokio::spawn(async move {
         let proxy_index = Arc::new(AtomicUsize::new(0));
@@ -99,6 +110,10 @@ pub fn check_usernames_stream(
         };
 
         for chunk in usernames.chunks(concurrency) {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+
             let futures: Vec<_> = chunk
                 .iter()
                 .map(|username| {
@@ -112,10 +127,15 @@ pub fn check_usernames_stream(
             let chunk_results = futures::future::join_all(futures).await;
 
             for result in chunk_results {
-                let _ = tx.send(CheckEvent::Result(result)).await;
+                if cancelled.load(Ordering::SeqCst) {
+                    break;
+                }
+                if tx.send(CheckEvent::Result(result)).await.is_err() {
+                    return;
+                }
             }
 
-            if delay_ms > 0 {
+            if delay_ms > 0 && !cancelled.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
@@ -123,7 +143,7 @@ pub fn check_usernames_stream(
         let _ = tx.send(CheckEvent::Done).await;
     });
 
-    rx
+    (rx, cancel_handle)
 }
 
 fn build_client(proxy: Option<Proxy>) -> reqwest::Client {
